@@ -21,9 +21,58 @@ namespace BioPlane.Bio
     /// Anything else is ignored. Without a time column the file is assumed to be
     /// evenly sampled at defaultSampleRate.
     ///
-    /// Units do not matter for breath and EDA: BioRouter normalizes both against
-    /// whatever range actually shows up, so raw ADC counts work as well as
-    /// microsiemens.
+    ///
+    /// WHAT NORMAL VALUES LOOK LIKE
+    ///
+    /// Units do not matter for breath and skin conductance, because BioRouter
+    /// normalizes both against whatever range actually shows up in the session, so
+    /// raw ADC counts work as well as calibrated physical units. The numbers below
+    /// are for sanity checking a file, not for hard-coding thresholds anywhere.
+    ///
+    ///   t          seconds, ascending. Gaps are fine, the reader interpolates.
+    ///              10 to 32 Hz sampling is plenty for all three channels.
+    ///
+    ///   breath     any scale. A chest belt on a 10 bit ADC gives roughly 0 to 1023,
+    ///              a normalized signal gives 0 to 1. What matters is that inhaling
+    ///              moves it in the positive direction; invert at the sensor if not.
+    ///              Resting adult respiration is 12 to 20 breaths per minute, which
+    ///              is a cycle every 3 to 5 seconds. Paced or meditative breathing
+    ///              runs 5 to 7 per minute, a cycle every 9 to 12 seconds, and that
+    ///              is the range this game is really tuned for.
+    ///
+    ///   hr         beats per minute. 60 to 100 is the textbook resting adult band,
+    ///              50 to 90 is what you actually see sitting still, trained
+    ///              endurance athletes drop into the 40s. Anything under 30 or over
+    ///              200 is almost certainly a sensor artifact rather than a heart.
+    ///              Rough ceiling under exertion is 220 minus age.
+    ///
+    ///   ibi / rr   the gap between beats, in milliseconds, as chest straps report
+    ///              it. 300 to 2000 ms covers 30 to 200 bpm. Values under 10 are
+    ///              read as seconds instead. Supplying ibi rather than hr is better
+    ///              when you have it: heart rate variability can only be computed
+    ///              from beat to beat intervals, and a strap that only reports an
+    ///              averaged bpm has already thrown that away.
+    ///
+    ///   eda        microsiemens, the reciprocal of resistance in megaohms. 1 to 20
+    ///              uS across people, 2 to 5 uS is a common resting level, and any
+    ///              one person moves over maybe 2 to 5 uS within a session. Two
+    ///              components matter and BioRouter separates them: the tonic level
+    ///              drifts over tens of seconds and is sustained arousal, while
+    ///              phasic responses rise 0.01 to 1 uS over 1 to 3 seconds and decay
+    ///              over 5 to 30. A rise under about 0.01 uS is conventionally not
+    ///              counted as a response at all.
+    ///
+    ///              Expect the level to climb for the first several minutes after
+    ///              electrodes go on, as sweat accumulates underneath them. That is
+    ///              not arousal. Between 5 and 25 percent of people produce almost
+    ///              no phasic activity at all, so never build a mechanic that
+    ///              requires a response to appear.
+    ///
+    /// A file whose numbers sit far outside these bands usually means a unit
+    /// mix-up: kilohms instead of microsiemens, seconds instead of milliseconds, or
+    /// a raw ADC count where a physical value was expected. The game will still
+    /// play, because everything is normalized, but the readouts will read as
+    /// nonsense and thresholds tuned on it will not transfer to real hardware.
     [AddComponentMenu("BioPlane/Bio/File Bio Source")]
     public class FileBioSource : BioSourceBase
     {
@@ -34,6 +83,7 @@ namespace BioPlane.Bio
         public string filePath = "";
 
         [Header("Playback")]
+        [Tooltip("Used only when the file has no time column. 10 to 32 Hz is typical.")]
         public float defaultSampleRate = 10f;
         public float playbackSpeed = 1f;
         public bool loop = true;
@@ -137,6 +187,8 @@ namespace BioPlane.Bio
                 s.hr = cHr >= 0 && cHr < parts.Length ? Num(parts[cHr]) : 0f;
                 if (s.hr <= 0f && cIbi >= 0 && cIbi < parts.Length)
                 {
+                    // Straps report the beat gap in milliseconds; anything under 10
+                    // is assumed to be seconds instead.
                     float ibi = Num(parts[cIbi]);
                     if (ibi > 10f) ibi /= 1000f;
                     if (ibi > 0.2f) s.hr = 60f / ibi;
@@ -196,6 +248,8 @@ namespace BioPlane.Bio
             float hr = Mathf.Lerp(a.hr, b.hr, k);
             float eda = Mathf.Lerp(a.eda, b.eda, k);
 
+            // Without this the loop point produces one enormous breath velocity
+            // spike, which the flight model reads as a violent inhale.
             if (wrapped) prevBreath = breath;
 
             f.hasBreath = hasBreathCol;
